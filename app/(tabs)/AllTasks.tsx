@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { View, FlatList, StyleSheet, TouchableOpacity, Alert } from 'react-native';
+import { View, FlatList, StyleSheet, TouchableOpacity, Alert, SafeAreaView } from 'react-native';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { ThemedText } from '@/components/ThemedText';
 import { ThemedView } from '@/components/ThemedView';
@@ -12,27 +12,26 @@ interface Task {
   id: string;
   name: string;
   completed: boolean;
-}
-
-interface TaskCategory {
-  title: string;
-  tasks: Task[];
+  folderId: string;
 }
 
 export default function AllTasks() {
-  const [categories, setCategories] = useState<TaskCategory[]>([]);
+  const [tasks, setTasks] = useState<Task[]>([]);
 
-  const loadTasksByCategory = async () => {
+  const loadTasks = async () => {
     try {
       const fileContent = await FileSystem.readAsStringAsync(fileUri);
       const storedData = JSON.parse(fileContent);
 
-      const categorizedTasks: TaskCategory[] = storedData.map((folder: any) => ({
-        title: folder.name,
-        tasks: Array.isArray(folder.tasks) ? folder.tasks : [],
-      }));
+      const allTasks = storedData.reduce((acc: Task[], folder: any) => {
+        const folderTasks = (folder.tasks || []).map((task: any) => ({
+          ...task,
+          folderId: folder.id,
+        }));
+        return acc.concat(folderTasks);
+      }, []);
 
-      setCategories(categorizedTasks);
+      setTasks(allTasks);
     } catch (error) {
       console.log('File read error:', error);
     }
@@ -40,113 +39,109 @@ export default function AllTasks() {
 
   useFocusEffect(
     useCallback(() => {
-      loadTasksByCategory(); // Reload tasks when AllTasks screen gains focus
+      loadTasks();
     }, [])
   );
 
-  const toggleTaskCompletion = (categoryIndex: number, taskId: string) => {
-    const updatedCategories = [...categories];
-    const taskList = updatedCategories[categoryIndex].tasks;
-    const updatedTasks = taskList.map(task =>
+  const toggleTaskCompletion = async (taskId: string, folderId: string) => {
+    const updatedTasks = tasks.map(task =>
       task.id === taskId ? { ...task, completed: !task.completed } : task
     );
-    updatedCategories[categoryIndex].tasks = updatedTasks;
-    setCategories(updatedCategories);
+    setTasks(updatedTasks);
+
+    // Dosyada görevin tamamlanma durumunu güncelle
+    try {
+      const fileContent = await FileSystem.readAsStringAsync(fileUri);
+      const storedData = JSON.parse(fileContent);
+      const folderIndex = storedData.findIndex((folder: any) => folder.id === folderId);
+
+      if (folderIndex !== -1) {
+        const folderTasks = storedData[folderIndex].tasks.map((task: any) =>
+          task.id === taskId ? { ...task, completed: !task.completed } : task
+        );
+        storedData[folderIndex].tasks = folderTasks;
+        await FileSystem.writeAsStringAsync(fileUri, JSON.stringify(storedData));
+      }
+    } catch (error) {
+      console.log('Error updating task completion:', error);
+    }
   };
 
-  const deleteTask = (categoryIndex: number, taskId: string) => {
+  const deleteTask = (taskId: string, folderId: string) => {
     Alert.alert('Delete Task', 'Are you sure you want to delete this task?', [
       { text: 'Cancel', style: 'cancel' },
       {
         text: 'Delete',
         style: 'destructive',
         onPress: async () => {
-          const updatedCategories = [...categories];
-          const updatedTasks = updatedCategories[categoryIndex].tasks.filter(task => task.id !== taskId);
-          updatedCategories[categoryIndex].tasks = updatedTasks;
-          setCategories(updatedCategories);
-          await saveCategories(updatedCategories); // Save changes to disk
+          const updatedTasks = tasks.filter(task => task.id !== taskId);
+          setTasks(updatedTasks);
+
+          // Dosyada görevi klasör bazında sil
+          try {
+            const fileContent = await FileSystem.readAsStringAsync(fileUri);
+            const storedData = JSON.parse(fileContent);
+            const folderIndex = storedData.findIndex((folder: any) => folder.id === folderId);
+            if (folderIndex !== -1) {
+              const folderTasks = storedData[folderIndex].tasks.filter((task: any) => task.id !== taskId);
+              storedData[folderIndex].tasks = folderTasks;
+              await FileSystem.writeAsStringAsync(fileUri, JSON.stringify(storedData));
+            }
+          } catch (error) {
+            console.log('Error deleting task:', error);
+          }
         },
       },
     ]);
   };
 
-  const deleteAllCompletedTasks = () => {
-    const updatedCategories = categories.map(category => ({
-      ...category,
-      tasks: category.tasks.filter(task => !task.completed),
-    }));
-    setCategories(updatedCategories);
-  };
-
-  const saveCategories = async (categoriesToSave: TaskCategory[]) => {
-    const dataToSave = categoriesToSave.map(category => ({
-      name: category.title,
-      tasks: category.tasks,
-    }));
-    await FileSystem.writeAsStringAsync(fileUri, JSON.stringify(dataToSave));
-  };
-
   return (
-    <ThemedView style={styles.container}>
-      {categories.length === 0 ? (
-        <ThemedText style={styles.noTasksText}>No categories or tasks found</ThemedText>
-      ) : (
-        <FlatList
-          data={categories}
-          keyExtractor={item => item.title}
-          renderItem={({ item, index }) => (
-            <View style={styles.categoryContainer}>
-              <ThemedText style={styles.categoryTitle}>{item.title}</ThemedText>
-              {item.tasks.length === 0 ? (
-                <ThemedText style={styles.noTasksText}>No tasks in this category</ThemedText>
-              ) : (
-                item.tasks.map(task => (
-                  <View key={task.id} style={styles.taskContainer}>
-                    <TouchableOpacity onPress={() => toggleTaskCompletion(index, task.id)} style={styles.checkbox}>
-                      {task.completed && <Ionicons name="checkmark" size={16} color="white" />}
-                    </TouchableOpacity>
-                    <ThemedText style={[styles.taskText, task.completed && styles.completedTaskText]}>
-                      {task.name}
-                    </ThemedText>
-                    <View style={styles.taskActions}>
-                      <TouchableOpacity onPress={() => toggleTaskCompletion(index, task.id)} style={styles.iconButton}>
-                        <Ionicons name="pencil" size={20} color="#4CAF50" />
-                      </TouchableOpacity>
-                      <TouchableOpacity onPress={() => deleteTask(index, task.id)} style={styles.iconButton}>
-                        <Ionicons name="trash" size={20} color="red" />
-                      </TouchableOpacity>
-                    </View>
-                  </View>
-                ))
-              )}
-            </View>
-          )}
-          ListFooterComponent={() => (
-            <TouchableOpacity style={styles.clearButton} onPress={deleteAllCompletedTasks}>
-              <ThemedText style={styles.clearButtonText}>Clear Completed Tasks</ThemedText>
-            </TouchableOpacity>
-          )}
-        />
-      )}
-    </ThemedView>
+    <SafeAreaView style={styles.safeArea}>
+      <ThemedView style={styles.container}>
+        <ThemedText style={styles.header}>All Tasks</ThemedText>
+
+        {tasks.length === 0 ? (
+          <ThemedText style={styles.noTasksText}>No tasks found</ThemedText>
+        ) : (
+          <FlatList
+            data={tasks}
+            keyExtractor={item => item.id}
+            renderItem={({ item }) => (
+              <View style={styles.taskContainer}>
+                <TouchableOpacity onPress={() => toggleTaskCompletion(item.id, item.folderId)} style={[styles.checkbox, item.completed && styles.completedCheckbox]}>
+                  {item.completed && <Ionicons name="checkmark" size={28} color="white" />}
+                </TouchableOpacity>
+                <ThemedText style={[styles.taskText, item.completed && styles.completedTaskText]}>
+                  {item.name}
+                </ThemedText>
+                <TouchableOpacity onPress={() => deleteTask(item.id, item.folderId)} style={styles.iconButton}>
+                  <Ionicons name="trash" size={28} color="red" />
+                </TouchableOpacity>
+              </View>
+            )}
+          />
+        )}
+      </ThemedView>
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
+  safeArea: {
     flex: 1,
-    padding: 20,
     backgroundColor: '#f5f5f5',
   },
-  categoryContainer: {
-    marginBottom: 20,
+  container: {
+    flex: 1,
+    paddingHorizontal: 20,
+    paddingTop: 10,
   },
-  categoryTitle: {
-    fontSize: 20,
+  header: {
+    fontSize: 24,
     fontWeight: 'bold',
-    color: '#FF5722',
-    marginBottom: 10,
+    textAlign: 'left',
+    marginVertical: 20,
+    color: '#000',
   },
   taskContainer: {
     flexDirection: 'row',
@@ -162,15 +157,19 @@ const styles = StyleSheet.create({
     elevation: 2,
   },
   checkbox: {
-    width: 24,
-    height: 24,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#4CAF50',
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    borderWidth: 2,
+    borderColor: '#ccc',
     alignItems: 'center',
     justifyContent: 'center',
+    backgroundColor: '#fff',
     marginRight: 12,
-    backgroundColor: '#4CAF50',
+  },
+  completedCheckbox: {
+    backgroundColor: 'black',
+    borderColor: 'black',
   },
   taskText: {
     fontSize: 18,
@@ -180,29 +179,13 @@ const styles = StyleSheet.create({
     textDecorationLine: 'line-through',
     color: 'gray',
   },
-  taskActions: {
-    flexDirection: 'row',
-  },
   iconButton: {
     padding: 8,
-    marginHorizontal: 4,
   },
   noTasksText: {
     fontSize: 16,
     color: 'gray',
     textAlign: 'center',
     padding: 10,
-  },
-  clearButton: {
-    backgroundColor: '#FF5722',
-    padding: 12,
-    borderRadius: 8,
-    alignItems: 'center',
-    marginTop: 20,
-  },
-  clearButtonText: {
-    color: 'white',
-    fontWeight: 'bold',
-    fontSize: 16,
   },
 });
